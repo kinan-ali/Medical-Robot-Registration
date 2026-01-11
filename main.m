@@ -1,4 +1,7 @@
-%Robot Registral tion Lab 
+% Robot Registration Lab 
+% Descrioption: Mediacal Robot Registration Lab, HealthTech program master,
+% University of Strasbourg 
+% Authors: Kinan ALI & Filippo MORINI
 %Initialization: 
 clear all; 
 clc; 
@@ -81,61 +84,137 @@ for k = 1:n_pts
 end
 
 % Solve for the Target Position in Navigation Frame
-P_target_nav = A \ b; % Left division solves Ax = b
+P_nav_target = A \ b; % Left division solves Ax = b
 
 fprintf('Target Position in Navigation Frame:\n');
-disp(P_target_nav);
+disp(P_nav_target);
 
 
 
 %Going forward to the robot, doing the hand-eye calibration 
 
-%%
 
-% 1) get the transformation between the nav & needle marker
-noise = 0 ;
-% position A:
-measure = GetLocalizerInformation(noise);
-Tnav_mark_inst_A = measure.mark(2).T; %transformation between the camera marker and the navigation system
+%% Hand-Eye Calibration
 
-T_base_eff = GetRobotCurrentPosition();
-T_base_inst_A = T_base_eff*Teff_inst;
-
-
-% position B
-current_position = T(1:3, 4);
-new_position = current_position + [40,0,0]';
-MoveEffPosition(new_position);
-
-measure = GetLocalizerInformation(noise);
-Tnav_mark_inst_B = measure.mark(2).T; %transformation between the camera marker and the navigation system
-
-T_base_eff = GetRobotCurrentPosition();
-T_base_inst_B = T_base_eff*Teff_inst;
+% 1. Data Collection
+% We need multiple movements to solve AX=XB reliably 
+% We will store the absolute poses first
+n_robot_moves = 8; 
+Tbase_inst_list = {}; % Stores absolute instrument poses in Base frame
+Tnav_mark_list = {};  % Stores absolute marker poses in Nav frame
 
 
-% position C 
-current_position = T(1:3, 4);
-new_position = current_position + [0,40,0]';
-MoveEffPosition(new_position);
+% Move robot to random positions and collect data
+for i = 1:n_robot_moves
+    % move to random positions, we will move X and Y for safty
+    % we want to stay in the safe workspace of the robot
+    % rand*100-50 gives an interval of 10 cm around 0
+    curr_robot_position = GetRobotCurrentPosition(noise);
+    curr_robot_z = curr_robot_position(3,4);
+    rand_pos = [round(rand*100-50), round(rand*100-50), curr_robot_z]';
+    MoveEffPosition(rand_pos);
+    pause(0.1); % for updating the simulation
 
-measure = GetLocalizerInformation(noise);
-Tnav_mark_inst_C = measure.mark(2).T; %transformation between the camera marker and the navigation system
+    % getting the navigation measurment: 
+    measure = GetLocalizerInformation(noise);
+    Tnav_mark = measure.mark(2).T; 
 
-T_base_eff = GetRobotCurrentPosition();
-T_base_inst_C = T_base_eff*Teff_inst;
+    % getting robot kinematics: 
+    Tbase_eff = GetRobotCurrentPosition(noise);
+    % moving from the effector frame to the INSTRUMENT frame: 
+    Tbase_inst = Tbase_eff * Teff_inst;
+
+    % store transformations: 
+    Tbase_inst_list{end+1} = Tbase_inst; 
+    Tnav_mark_list{end+1} = Tnav_mark;
+
+end
+
+% 2. Construct Relative Transformations (Lists A and B)
+% A_i * X = X * B_i
+% A corresponds to instrument motion, B to marker motion
+listeA = {};
+listeB = {};
+for i = 1:(n_robot_moves-1)
+
+    % A relative motions for the instrument:
+    T1 = Tbase_inst_list{i};
+    T2 = Tbase_inst_list{i+1};
+    A = inv(T1) * T2;
+    listeA{end+1} = A;
 
 
-% Constr
+    % B: Relative motions of the marker (same as before)
+    U1 = Tnav_mark_list{i};
+    U2 = Tnav_mark_list{i+1};
+    B = inv(U1) * U2; 
+    listeB{end+1} = B;
+
+end
+
+% solving the hand-eye calibration problem AX = XB : 
+Tinst_mark = AXeqXB(listeA, listeB)
+
+% Calculating the static world transform base -> nav :
+last_T_base_inst = Tbase_inst_list{end};
+last_T_nav_mark  = Tnav_mark_list{end};
+Tbase_nav = last_T_base_inst * Tinst_mark * inv(last_T_nav_mark)
+
+%% Following the chaine: 
+% now that we have the elements of the chaine, we can follow it: 
+% tareget to base frame:
+P_nav_target_homo = [P_nav_target; 1];
+P_base_target_homo = Tbase_nav * P_nav_target_homo;
+P_base_target = P_base_target_homo(1:3);
+
+% we got the target position in the base, HOWEVER this is where the NEEDLE
+% should be. we know the offset between the needle and eff: 350 mm: 
+% FURTHERMORE: this 350 offest is in the eff frame not in the base! 
+% to be able to apply this offset and caculate the desired position of the
+% EFFECTOR in the BASE frame, we need to know how the needle is oriented,
+% So we need to find where's the trocar! 
+
+% 1. Calculate Trocar Position (The Pivot Point)
+% We use the stored positions from your calibration loop (Tbase_inst_list).
+% All these needle positions pass through the single fixed trocar point.
+% that's because the problem assumes passive wrist and the instrument
+% always passes through the trocar:
+A_trocar = zeros(3,3);
+b_trocar = zeros(3,1);
+
+for i = 1:length(Tbase_inst_list)
+    % needle position pose in the base frame: 
+    T = Tbase_inst_list{i};
+    % The needle axis is the Z-axis of this transformation (3rd column)
+    u = T(1:3, 3); 
+    O = T(1:3, 4); % The tip position
+
+    % Least Squares Line Intersection (Same math as triangulation)
+    proj = eye(3) - u*u';
+    A_trocar = A_trocar + proj;
+    b_trocar = b_trocar + proj * O;
+end
+
+P_base_trocarInst = A_trocar \ b_trocar;
+
+% 2. Calculate the Command using the Trocar
+% We know the target P_base_target (where the tip goes).
+% We know the needle must pivot through P_trocar.
+
+% A. Find the direction vector (The specific "Tilt" for this target)
+insertion_vector = P_base_target - P_base_trocarInst;
+needle_axis_z = insertion_vector / norm(insertion_vector);
 
 
 
+% B. Apply the 350mm offset ALONG that specific axis
+% This is the "subtraction in the effector frame" projected correctly into World space.
+target_effector_pos = P_base_target - (350 * needle_axis_z);
 
 
-
-
-
-
-
+% 3. Execute
+MoveEffPosition(target_effector_pos);
+final_error = ComputeTRE();
+fprintf('Final TRE (error of positioning in the target): %.4f mm\n', final_error);
 
 
