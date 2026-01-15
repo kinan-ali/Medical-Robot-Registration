@@ -245,6 +245,205 @@ DisplayConfig()
 ComputeTRE()
 
 
+
+
+
+
+%% 5) ASSESSMENT OF ERRORS PROPAGATION
+% ---------------------------------------------------------
+% PART 1: Setup and Analytical Solution (Variance Propagation)
+% ---------------------------------------------------------
+clc;
+InitConfig();
+fprintf('--- Q5.1: Analytical Variance Propagation ---\n');
+
+% 1. Define Geometry (Simulation Configuration)
+% We explicitly define a realistic configuration in the Robot Base Frame 
+% for this analysis.
+% ---------------------------------------------------------
+% L: Length of the instrument 
+L_inst = 350; %mm
+
+noise = 0;
+T_base_eff = GetRobotCurrentPosition(noise);
+
+P_base_eff = T_base_eff(1:3,4);
+P_base_trocar = [-350; -100; 800]; % computed earlier in Q3 (triangulation)
+
+% Calculate the Mean Tip Position (Y) based on this geometry
+% Vector V goes from Effector to Trocar
+V = P_base_trocar - P_base_eff;
+dist_V = norm(V);
+u_hat = V / dist_V; % Unit direction vector of the needle
+
+% The Tip is located distance L along this direction starting from Effector
+P_base_tip = P_base_eff + L_inst * u_hat;
+
+% 2. Define Input Uncertainty (Sigma_X)
+% ---------------------------------------------------------
+% Instructions: "Standard deviation ... isotropic and of amplitude 1 mm"
+sigma_trocar = 1.0; % 1 mm standard deviation
+sigma_trocar_x = 1/3; 
+Sigma_X = eye(3) * sigma_trocar_x; % Covariance matrix of the Trocar
+
+% 3. Calculate Jacobian (J)
+% ---------------------------------------------------------
+% Formula derived: J = (L / ||V||) * (I - u*u')
+% This maps small changes in Trocar (X) to changes in Tip (Y)
+I3 = eye(3);
+J = (L_inst / dist_V) * (I3 - (u_hat * u_hat'));
+
+% 4. Analytical Error Propagation
+% ---------------------------------------------------------
+Sigma_Y_base = J * Sigma_X * J';
+
+fprintf('Analytical Covariance Matrix (Base Frame) calculated.\n');
+disp(Sigma_Y_base);
+
+% 5. Prepare for Plotting (Convert to World Frame)
+% ---------------------------------------------------------
+% The Rotation matrix from Base to World.
+R_world_base = Tworld_base(1:3, 1:3);
+t_world_base = Tworld_base(1:3, 4);
+
+% Rotate the Covariance Matrix to World Frame
+% Sigma_world = R * Sigma_base * R'
+Sigma_Y_world_analytic = R_world_base * Sigma_Y_base * R_world_base';
+
+% Transform the Center Point (Tip) to World Frame for plotting later
+P_world_tip_analytic = Tworld_base * [P_base_tip; 1];
+P_world_tip_analytic = P_world_tip_analytic(1:3);
+
+fprintf('Converted Analytical results to World Frame for plotting.\n');
+
+% ---------------------------------------------------------
+% PART 2: Numerical Evaluation (Monte Carlo Simulation)
+% ---------------------------------------------------------
+fprintf('\n--- Q5.2: Numerical Simulation (Monte Carlo) ---\n');
+
+% 1. Simulation Parameters
+% ---------------------------------------------------------
+n_samples = 1000; % Number of iterations 
+P_base_tips_noisy = zeros(3, n_samples); % Storage for results
+
+fprintf('Simulating %d noisy samples...\n', n_samples);
+
+% 2. Monte Carlo Loop
+% ---------------------------------------------------------
+for i = 1:n_samples
+    % A. Generate Noise
+    % isotropic noise = 1mm -> sigma_x^2 = 1/3
+    % randn() generates Normal distribution with mean=0, std=1.
+    noise_vector = randn(3, 1) * sqrt(sigma_trocar_x); 
+    
+    % B. Perturb the Input (Trocar)
+    % We assume ONLY the trocar has error 
+    P_base_trocar_noisy = P_base_trocar + noise_vector;
+    
+    % C. Recalculate Output (Tip Position) using the EXACT Geometric Model
+    % Y = P_eff + L * (u / ||u||)
+    
+    % Recalculate vector V_noisy from Effector -> Noisy Trocar
+    V_noisy = P_base_trocar_noisy - P_base_eff;
+    
+    % Normalize
+    u_hat_noisy = V_noisy / norm(V_noisy);
+    
+    % Calculate new Tip Position
+    P_tip_noisy = P_base_eff + L_inst * u_hat_noisy;
+    
+    % D. Store result
+    P_base_tips_noisy(:, i) = P_tip_noisy;
+end
+
+% 3. Calculate Numerical Covariance
+% ---------------------------------------------------------
+% Use Matlab's built-in cov() function. 
+% Note: cov expects rows = samples, so we transpose (') the matrix.
+Sigma_Y_base_numeric = cov(P_base_tips_noisy');
+
+fprintf('Numerical Covariance Matrix (Base Frame) calculated.\n');
+disp(Sigma_Y_base_numeric);
+
+% 4. Convert to World Frame for Comparison
+% ---------------------------------------------------------
+% We must rotate the numerical covariance to World Frame just like we did
+% for the analytical one.
+Sigma_Y_world_numeric = R_world_base * Sigma_Y_base_numeric * R_world_base';
+
+% We also transform the cloud of points to World Frame for plotting
+P_world_tips_noisy = zeros(3, n_samples);
+for i = 1:n_samples
+    pt_base_homo = [P_base_tips_noisy(:, i); 1];
+    pt_world_homo = Tworld_base * pt_base_homo;
+    P_world_tips_noisy(:, i) = pt_world_homo(1:3);
+end
+
+fprintf('Converted Numerical results to World Frame for plotting.\n');
+
+% ---------------------------------------------------------
+% PART 3: Visualization and Comparison
+% ---------------------------------------------------------
+fprintf('\n--- Q5.3: Visualization & Comparison ---\n');
+
+% 1. Calculate Eigenvalues and Eigenvectors
+% ---------------------------------------------------------
+% Analytical:
+[V_ana, D_ana] = eig(Sigma_Y_world_analytic);
+
+% Use abs() to handle tiny negative noise (e.g., -1e-16) preventing complex
+% numbers in sqrt()
+radii_ana = sqrt(abs(diag(D_ana))); 
+
+% Numerical:
+[V_num, D_num] = eig(Sigma_Y_world_numeric);
+
+% Same here for numerical stability
+radii_num = sqrt(abs(diag(D_num)));
+
+% Print Comparison to Console
+fprintf('\nComparison of Principal Axes (Standard Deviations):\n');
+fprintf('%-15s %-15s %-15s\n', 'Axis', 'Analytical', 'Numerical');
+for k = 1:3
+    fprintf('Axis %d:         %.4f          %.4f\n', k, radii_ana(k), radii_num(k));
+end
+fprintf('(Note: One axis should be close to 0, representing the needle axis direction)\n');
+
+% 2. Plotting
+% ---------------------------------------------------------
+figure('Name', 'Q5: Error Propagation Comparison'); clf; hold on; grid on; axis equal;
+xlabel('X World (mm)'); ylabel('Y World (mm)'); zlabel('Z World (mm)');
+title('Comparison of Error Ellipsoids (World Frame)');
+view(3); % Set 3D view
+
+% A. Plot the "Cloud" of Monte Carlo points (Grey dots)
+plot3(P_world_tips_noisy(1,:), P_world_tips_noisy(2,:), P_world_tips_noisy(3,:), ...
+      '.', 'Color', [0.7 0.7 0.7], 'DisplayName', 'Monte Carlo Cloud');
+
+% B. Plot the Mean Tip Position (Black Marker)
+plot3(P_world_tip_analytic(1), P_world_tip_analytic(2), P_world_tip_analytic(3), ...
+      'k+', 'LineWidth', 2, 'MarkerSize', 10, 'DisplayName', 'Mean Tip Position');
+
+% C. Plot Analytical Ellipsoid
+% Note: plot_ellipsoid(center, rot_mat, axe_lengthes, scale)
+% We use scale=1 (1 Standard Deviation)
+% We rely on the function's default coloring. 
+fprintf('\nPlotting Analytical Ellipsoid...\n');
+plot_ellipsoid(P_world_tip_analytic, V_ana, radii_ana, 1);
+
+% D. Plot Numerical Ellipsoid
+fprintf('Plotting Numerical Ellipsoid...\n');
+% We assume the numerical one will overlay the analytical one.
+plot_ellipsoid(P_world_tip_analytic, V_num, radii_num, 1);
+
+legend('Location', 'best');
+hold off;
+
+
+
+
+
+
 %% 6) POSITIONING UNDER THE FEEDBACK OF THE CAMERA
 % Before the robot was moving in an open loop
 % --> now closed-loop based on position based visual servoing
@@ -314,3 +513,4 @@ end
 
 DisplayConfig()
 ComputeTRE()
+
