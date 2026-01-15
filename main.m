@@ -2,6 +2,8 @@
 %%%% ROBOT REGISTRATION %%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+% Authors: Filippo Morini & Kinan Ali
+
 clear
 clc
 close all
@@ -513,4 +515,5 @@ end
 
 DisplayConfig()
 ComputeTRE()
+
 
