@@ -5,7 +5,7 @@ function [target_nav] = geometric_triangulation(RDs,OCs)
 
 A = zeros(3,3);
 b = zeros(3,1);
-n_pts = size(RDs,1);
+n_pts = size(RDs,2);
 
 for k = 1:n_pts
     % Build the orthogonal projection matrix. Formula: (I - u*u')
@@ -18,6 +18,5 @@ end
 
 % Solve for the Target Position in Navigation Frame (A*x = b)
 target_nav = A \ b;
-
 
 end
