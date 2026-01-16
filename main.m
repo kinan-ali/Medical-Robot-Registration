@@ -9,11 +9,20 @@ clc
 close all
 
 
-%% 3) REGISTRATION USING THE NAVIGATION SYSTEM
+%% INITIAL CONDITIONS
 
 % Display the initial configuration
 InitConfig();
-% DisplayConfig()
+%DisplayConfig()
+
+% Set noise
+noise_robot = 0;
+noise_nav = 0;
+noise_cam = 0;
+noise_inst = 0;
+
+
+%% 3) REGISTRATION USING THE NAVIGATION SYSTEM
 
 % Known intrinsic parameters
 K_camera = [400 0 380;   % in pixels
@@ -21,14 +30,14 @@ K_camera = [400 0 380;   % in pixels
             0 0 1];
 K_camera_inv = K_camera \ eye(size(K_camera));
 
-noise = 0; % Set noise
-
-%%%%%%% POSITION OF THE TARGET IN THE NAVIGATION SYSTEM FRAME %%%%%%%
+%%%%% POSITION OF THE TARGET IN THE NAVIGATION SYSTEM FRAME 
 % The estimation of the position of the target in the navigation system
 % frame is carried out by using triangulation from several perspective images.
 % Triangulation is performed in the navigation system frame.
 % Implemented function: geometric_triangulation
 
+% 1) Ray directions and optical centers for triangulation
+% -------------------------------------------------------------------------
 n_positions = 4;    % Number of different positions of the endoscopic camera
 
 % Transform between marker and endoscopic camera (inverse of Tcam_mark_cam)
@@ -39,16 +48,20 @@ T_markCam_cam = [R_markCam_cam, t_markCam_cam;
 % Determining RDs and OCs to then perform triangulation
 RDs = [];   % ray directions in the navigation frame
 OCs= [];    % optical centers in the navigation system frame
+move = [5 0 0 -8;
+         -2 5 0 6;
+         0 -6 3 3;
+         1 1 1 1];
 for i = 1:n_positions
-
+    
     % Transform between navigation system and marker
-    measure = GetLocalizerInformation();
+    measure = GetLocalizerInformation(noise_nav);
     T_nav_markerCam = measure.mark(1).T;
     R_nav_markerCam = T_nav_markerCam(1:3,1:3);
     t_nav_markerCam = T_nav_markerCam(1:3,4);
 
     % Position of the target in the endoscopic camera image
-    targ_pos = GetTargetPosition(noise);
+    targ_pos = GetTargetPosition(noise_cam);
 
     % Ray directions in the navigation system frame
     m = K_camera_inv * [targ_pos; 1];               % normalized image plane vector
@@ -61,89 +74,103 @@ for i = 1:n_positions
     RDs = [RDs, ray_direction];
     OCs = [OCs, opt_center_nav];
 
-    % Inputs of MoveCamera are translation [mm] and angle of rotation [°]    
-    MoveCamera(rand(3,1)*3 +1, round(rand*5) + 1)
+    % Inputs of MoveCamera are translation [mm] and angle of rotation [°]
+    MoveCameraInitialPosition()
+    MoveCamera([move(1,i),move(2,i), move(3,i)]', move(4,i))
 end
 
-% Triangulation in navigation systema frame by using the 
+% 2) Triangulation in navigation systema frame by using the 
 % implemented function "geometric_triangulation"
+% -------------------------------------------------------------------------
 RDs = RDs(1:3,:);   % ray directions
 OCs = OCs(1:3,:);   % optical centers
 target_nav = geometric_triangulation(RDs, OCs);
 
-%%%%%%% CALIBRATION OF THE FIXED TRANSFORM BETWEEN %%%%%%%
-%%%%%%% THE INSTRUMENT AND THE ATTACHED RIGID BODY %%%%%%%
+
+%%%%% CALIBRATION OF THE FIXED TRANSFORM BETWEEN 
+%%%%% THE INSTRUMENT AND THE ATTACHED RIGID BODY 
 % Sensors: navigation system (for the marker) + robot (for the instrument)
 % Implemented function: eyehand, loc_3Dhorn
+% A(kl) * X = X * B(kl) --> Need at least 2 movements (3 configurations: A, B, C) to solve for X
+%                           Here 4 configurations were used for robustness
 
-% A(kl) * X = X * B(kl)
-% Need at least 2 movements (3 positions: A, B, C) to solve for X
+% 1) Collect the transforms for the A(kl) and B(kl) list of matrices
+% -------------------------------------------------------------------------
+n_config = 4;
+% Take the reference configuration as starting point for robustness to noise
+Tbaseeff = GetRobotCurrentPosition(noise_robot);
+current_position = Tbaseeff(1:3,4);
+% Movements (of end effector)
+move = [30 20 5;
+        -20 30 -10;
+        -10 -40 15;
+        0 0 0]';                   % last movement won't be measured
+% Initialize the transformations
+T_nav_markerInst_list = zeros(4,4,n_config);
+T_base_inst_list = zeros(4,4,n_config);
+T_base_eff_list = zeros(4,4,n_config);
 
-% Position A
-measureA = GetLocalizerInformation(noise);
-Tnav_markerInst_A = measureA.mark(2).T;         % Pose of the marker in the navigation system frame
-T_base_effA = GetRobotCurrentPosition(noise);
-T_base_inst_A = T_base_effA*Teff_inst;          % Pose of the instrument in the robot base frame
+for n = 1:n_config
+    measure = GetLocalizerInformation(noise_nav);
+    T_nav_markerInst_list(:,:,n) = measure.mark(2).T;              % Pose of the marker in the navigation system frame
+    T_base_eff_list(:,:,n) = GetRobotCurrentPosition(noise_robot);
+    T_base_inst_list(:,:,n) = T_base_eff_list(:,:,n)*Teff_inst;    % Pose of the instrument in the robot base frame
+    new_position = current_position + move(:,n);                   % Movement to be performed 
+    MoveEffPosition(new_position);
+end
 
-% Position B
-current_position = T_base_effA(1:3, 4);
-new_position = current_position + [40,0,0]';
-MoveEffPosition(new_position);                  % Move the end effector to reach position B
+% 2) Computation the Akl and Bkl list of matrices
+% -------------------------------------------------------------------------
+list_Akl = zeros(4,4,6);    % contains T_instK_instL
+list_Bkl = zeros(4,4,6);    % contains T_markerK_markerL
 
-measureB = GetLocalizerInformation(noise);
-Tnav_markerInst_B = measureB.mark(2).T;         % Pose of the marker in the navigation system frame
-T_base_effB = GetRobotCurrentPosition(noise);
-T_base_inst_B = T_base_effB*Teff_inst;          % Pose of the instrument in the robot base frame
+list_Akl(:,:,1) = inv(T_base_inst_list(:,:,1))*T_base_inst_list(:,:,2);
+list_Akl(:,:,2) = inv(T_base_inst_list(:,:,1))*T_base_inst_list(:,:,3);
+list_Akl(:,:,3) = inv(T_base_inst_list(:,:,1))*T_base_inst_list(:,:,4);
+list_Akl(:,:,4) = inv(T_base_inst_list(:,:,2))*T_base_inst_list(:,:,3);
+list_Akl(:,:,5) = inv(T_base_inst_list(:,:,2))*T_base_inst_list(:,:,4);
+list_Akl(:,:,6) = inv(T_base_inst_list(:,:,3))*T_base_inst_list(:,:,4);
 
-% Position C 
-current_position = T_base_effB(1:3, 4);
-new_position = current_position + [0,40,0]';    % The three positions need to be not aligned
-MoveEffPosition(new_position);                  % Move the end effector to reach position C
+list_Bkl(:,:,1) = inv(T_nav_markerInst_list (:,:,1))*T_nav_markerInst_list (:,:,2);
+list_Bkl(:,:,2) = inv(T_nav_markerInst_list (:,:,1))*T_nav_markerInst_list (:,:,3);
+list_Bkl(:,:,3) = inv(T_nav_markerInst_list (:,:,1))*T_nav_markerInst_list (:,:,4);
+list_Bkl(:,:,4) = inv(T_nav_markerInst_list (:,:,2))*T_nav_markerInst_list (:,:,3);
+list_Bkl(:,:,5) = inv(T_nav_markerInst_list (:,:,2))*T_nav_markerInst_list (:,:,4);
+list_Bkl(:,:,6) = inv(T_nav_markerInst_list (:,:,3))*T_nav_markerInst_list (:,:,4);
 
-measureC = GetLocalizerInformation(noise);
-Tnav_markerInst_C = measureC.mark(2).T;         % Pose of the marker in the navigation system frame
-
-T_base_effC = GetRobotCurrentPosition();
-T_base_inst_C = T_base_effC*Teff_inst;          % Pose of the instrument in the robot base frame
-
-% Computation the Akl and Bkl matrices
-list_Akl = zeros(4,4,3);    % contains T_instK_instL
-list_Bkl = zeros(4,4,3);    % contains T_markerK_markerL
-
-list_Akl(:,:,1) = inv(T_base_inst_A)*T_base_inst_B;
-list_Akl(:,:,2) = inv(T_base_inst_B)*T_base_inst_C;
-list_Akl(:,:,3) = inv(T_base_inst_A)*T_base_inst_C;
-
-list_Bkl(:,:,1) = inv(Tnav_markerInst_A)*Tnav_markerInst_B;
-list_Bkl(:,:,2) = inv(Tnav_markerInst_B)*Tnav_markerInst_C;
-list_Bkl(:,:,3) = inv(Tnav_markerInst_A)*Tnav_markerInst_C;
-
-% Use the implemented function "eyehand" (contains "loc_3Dhorn") to solve
+% 3) Use the implemented function "eyehand" (contains "loc_3Dhorn") to solve
+% -------------------------------------------------------------------------
 T_inst_markerInst = eyehand(list_Akl, list_Bkl);
 
-%%%%%%% TROCARD POSITION %%%%%%%
+
+%%%% TROCARD POSITION
 % Use geometric triangulation in the robot base frame
-% 1 - Move the robot in order to get three configurations
+% 1 - Move the robot in order to get many configurations
 % 2 - Compute the lines that passes from the needle and the end effector
 % 3 - the trocard is at their intersection (use of the implemented function "geometric_calibration")
 
-% Positions of the end effector in the robot base frame in three configurations
-OCs = [T_base_effA(1:3,4), T_base_effB(1:3,4),T_base_effC(1:3,4)];
-
+% 1) Use the configurations of eye-hand calibration
+% -------------------------------------------------------------------------
+% Positions of the end effector in the robot base frame in four configurations
+OCs = [T_base_eff_list(1:3,4,1), T_base_eff_list(1:3,4,2), T_base_eff_list(1:3,4,3), T_base_eff_list(1:3,4,4)];
 % Same for the instrument
-inst_base = [T_base_effA*[teff_inst;1], T_base_effB*[teff_inst;1], T_base_effC*[teff_inst;1]];
+inst_base = [T_base_eff_list(:,:,1)*[teff_inst;1], T_base_eff_list(:,:,2)*[teff_inst;1], ...
+                    T_base_eff_list(:,:,3)*[teff_inst;1], T_base_eff_list(:,:,4)*[teff_inst;1]];
 inst_base = inst_base(1:3,:);
 
+% 2) Ray directions and optical centers in the robot base frame
+% -------------------------------------------------------------------------
 RDs = inst_base - OCs;                          % ray directions vectors
 for i=1:size(RDs,2)
     unitvec = RDs(1:3,i) / norm(RDs(1:3,i));
     RDs(1:3,i) = unitvec;                       % ray directions unit vectors
 end
 
-% Find the intersection
+% 3) Find the intersection through triangulation
+% -------------------------------------------------------------------------
 trocard_base = geometric_triangulation(RDs, OCs);
 
-%%%%%%% COMPUTATION OF TRAJECTORIES IN THE ROBOT BASE FRAME %%%%%%%
+%%%%% COMPUTATION OF TRAJECTORIES IN THE ROBOT BASE FRAME 
 % The aim is to bring the instrument in the target position
 % 1 - We have the entry point E (trocard) in the robot base frame,
 % therefore we need to compute the target T in the robot base frame
@@ -153,19 +180,23 @@ trocard_base = geometric_triangulation(RDs, OCs);
 
 InitConfig() % return to initial configuration
 
+% 1) Compute the target in the robot base frame
+% -------------------------------------------------------------------------
 % Computation of target point in robot base frame
-measure = GetLocalizerInformation(noise);
+measure = GetLocalizerInformation(noise_nav);
 T_nav_markerInst = measure.mark(2).T;           
-T_base_eff = GetRobotCurrentPosition(noise);
+T_base_eff = GetRobotCurrentPosition(noise_robot);
 % Use a tranform chain to go from navigation system to base frame
 target_base = T_base_eff * Teff_inst * T_inst_markerInst * inv(T_nav_markerInst) * [target_nav;1];
 target_base = target_base(1:3);                 % target in the base frame
 
-% Computation of trajectory
+% 2) Computation of trajectory
+% -------------------------------------------------------------------------
 trajectory = (target_base - trocard_base) / norm(target_base - trocard_base);
 eff_position = target_base - trajectory*350;    % desired end effector position
 
-% Move the effector in the wanted position
+% 3) Move the effector in the wanted position
+% -------------------------------------------------------------------------
 MoveEffPosition(eff_position)
 DisplayConfig()
 ComputeTRE()
@@ -173,81 +204,88 @@ ComputeTRE()
 
 %% 4) REGISTRATION WITHOUT THE NAVIGATION SYSTEM
 % To obtain the position of the target in the endoscopic camera frame:
-% 1 - Move the camera in three positions from which it can see both the
+% 1 - Move the camera in eight positions from which it can see both the
 % target and the instrument marker
 % 2 - Compute the relative transforms between the camera positions by using
 % the pose of the marker obtained by GetInstrumentPosition()
 % 3 - Geometric triangulation (using the implemented function "geometric_triangulation") 
 
 InitConfig()                    % return to initial configuration
-MoveCameraInitialPosition()
-MoveCamera([10 5 -15]', 0);     % find an image in which both the target and the marker are visible
 
-% We'll use three images for triangulation (two movements)
-% Image 1
-targ_image1 = GetTargetPosition(noise);
-Tcam_inst1 = GetInstrumentPosition(noise);
+% 1) Move the camera and compute the optical centers and ray directions
+% -------------------------------------------------------------------------
+% Movements: each of these movements provide an image in which both the target
+% and the marker are visible
+nmove = 8;
+move_t = [10 5 -15;                 % translations     
+          14 6 -8;          
+          8 3 -20;
+          12 7 -15];
+move_angle = [0,-40, 30, 50];       % angles
+% Initialization
+targ_images = zeros(2,nmove); 
+Tcam_inst = zeros(4,4,nmove);
+T_cam1_camN = zeros(4,4,nmove-1);
+OCs = zeros(3,nmove);
+RDs = zeros(3,nmove);
 
-% First movement   
-MoveCamera(rand(3,1) +1, round(rand*3) + 1)   
-% Image 2
-targ_image2 = GetTargetPosition(noise);
-Tcam_inst2 = GetInstrumentPosition(noise);
+for ii = 1:nmove
+    MoveCameraInitialPosition()                             % To start from a repeatable position
+    if mod(ii,2) ~= 0
+        MoveCamera(move_t(round(ii/2),:)', move_angle(round(ii/2)));  
+    else
+        MoveCamera((move_t(round(ii/2),:)' + rand(3,1)), (move_angle(round(ii/2)) + rand))
+    end
+    targ_images(:,ii) = GetTargetPosition(noise_cam);       % target positions in the images
+    Tcam_inst(:,:,ii) = GetInstrumentPosition(noise_inst);  % Pose of the instrument marker in camera
+    % Relative pose of cameras (reference: camera in position 1)
+    if ii > 1
+        T_cam1_camN(:,:,ii-1) = Tcam_inst(:,:,1) * inv(Tcam_inst(:,:,ii));    
+    end
+    % Optical centers in camera position 1 frame
+    if ii < 2
+        OCs(:,ii) = [0 0 0]';
+    else
+        OCs(:,ii) = T_cam1_camN(1:3,4,ii-1);
+    end
+end
 
-% Second movement
-MoveCameraInitialPosition()     % to be robust to noise
-MoveCamera([5 5 -20]', 0);      % as in image 1
-MoveCamera(rand(3,1) +1, round(rand*3) + 1)
-% Image 3
-targ_image3 = GetTargetPosition(noise);
-Tcam_inst3 = GetInstrumentPosition(noise);
-
-targ_images = [targ_image1, targ_image2, targ_image3];
 % Normalized image plane points in the correspondent image plane
 m = K_camera_inv * [targ_images; ones(1, size(targ_images,2))];
 m = m(1:3,:);
+% Ray directions in camera position 1 frame
+RDs(:,1) = m(:,1)/norm(m(:,1));
+for jj = 1:(nmove-1)
+    dir = T_cam1_camN(1:3,1:3,jj)*m(:,jj+1);
+    RDs(:,jj+1) = dir/ norm(dir);
+end
 
-% Relative pose between optical centers
-Tcam1_cam2 = Tcam_inst1 * inv(Tcam_inst2);
-Tcam1_cam3 = Tcam_inst1 * inv(Tcam_inst3);
-
-% Choose first optical center as reference frame
-OC1 = [0 0 0]';
-OC2 = Tcam1_cam2(1:3,4);
-OC3 = Tcam1_cam3(1:3,4);
-OCs = [OC1, OC2, OC3];
-
-% Ray directions in the reference frame
-RD1 = m(:,1)/norm(m(1:3,1));
-dir2 = Tcam1_cam2(1:3,1:3)*m(:,2);
-RD2 = dir2 / norm(dir2);
-dir3 = Tcam1_cam3(1:3,1:3)*m(:,3);
-RD3 = dir3 / norm(dir3);
-RDs = [RD1, RD2, RD3];
-
-% Geometric triangulation in the frame of the device when we took image1
+% 2) Geometric triangulation in the frame of the device when we took image1
+% -------------------------------------------------------------------------
 target_camera1 = geometric_triangulation(RDs, OCs);
 
-T_base_eff = GetRobotCurrentPosition(noise);
-% Target in the robot base frame
+T_base_eff = GetRobotCurrentPosition(noise_robot);
+
+% 3) Target in the robot base frame
+% -------------------------------------------------------------------------
+Tcam_inst1 = Tcam_inst(:,:,1);
 target_base = T_base_eff * Teff_inst * inv(Tcam_inst1) * [target_camera1;1];
 target_base = target_base(1:3);
 
 % NOTE: From here the solving methods are the same as before in exercise 3
 % Trocart in camera frame: is the variable 'trocard_base'
 
-% Computation of trajectory
+% 4) Computation of trajectory
+% -------------------------------------------------------------------------
 trajectory = (target_base - trocard_base) / norm(target_base - trocard_base);
 eff_position = target_base - trajectory*350;    % desired end effector position
 
-% Move the effector in the wanted position
+% 5) Move the effector in the wanted position
+% -------------------------------------------------------------------------
 MoveCameraInitialPosition()
 MoveEffPosition(eff_position)
 DisplayConfig()
 ComputeTRE()
-
-
-
 
 
 
@@ -443,9 +481,6 @@ hold off;
 
 
 
-
-
-
 %% 6) POSITIONING UNDER THE FEEDBACK OF THE CAMERA
 % Before the robot was moving in an open loop
 % --> now closed-loop based on position based visual servoing
@@ -459,22 +494,25 @@ hold off;
 % Jacobian is the Rotation R_cam_base * (R that inverts the x and y
 % rotations: due to the trocard inversion)  NOTE: leverage effect is
 % ignored
- 
+
+% 1) Find the target in a chosen camera position (will be used as reference)
+% -------------------------------------------------------------------------
 % Move in a position in which is possible to see both target and instrument
 % tip
 InitConfig()
 MoveCamera([10 5 -15]', 0); % this position is found in exercise 4
 
 % Target in current camera position (through relative pose)
-Tcam_inst = GetInstrumentPosition();
+Tcam_inst = GetInstrumentPosition(noise_inst);
 T_cam_cam1 = Tcam_inst*inv(Tcam_inst1);         % from camera1 (see ex4) to current camera position
 target_camera = T_cam_cam1*[target_camera1;1]; 
 target_camera = target_camera(1:3);             % target in the current camera position
 
-% Parameters
+% 2) Point Based Visual Servoing
+% -------------------------------------------------------------------------
 dt = 0.1;
 max_iter = 300;
-lambda = 0.3;               % is the gain of the controller
+lambda = 0.5;               % is the gain of the controller
 threshold_error = 0.1;      % max error allowed
 L = teff_inst(3);           % distance from end effector to instrument tip
 
@@ -489,7 +527,7 @@ iter = 0;
 
 while (norm(error) > threshold_error) && (iter < max_iter)
     % Quantities used to update the Jacobian
-    Tbase_eff = GetRobotCurrentPosition(noise);
+    Tbase_eff = GetRobotCurrentPosition(noise_robot);
     eff_base = Tbase_eff(1:3,4);                % effector in the robot frame
     d_vect = trocard_base - eff_base;           % vector from effector to trocard
     d = norm(d_vect);
@@ -506,14 +544,19 @@ while (norm(error) > threshold_error) && (iter < max_iter)
     end
     MoveEffVelocity(eff_vel,dt)                 % use the robot manipulator (Inverse Differential Kinematics)
     % Update the error with new instrument tip position
-    Tcam_inst = GetInstrumentPosition(noise);   
+    Tcam_inst = GetInstrumentPosition(noise_inst);   
     inst_camera = Tcam_inst(1:3,4);             % instrument tip position in camera frame
     error = target_camera - inst_camera;        % update the error
     error_plot = [error_plot, norm(error)];
     iter = iter +1;
 end
 
+% 3) Display results
+% -------------------------------------------------------------------------
 DisplayConfig()
-ComputeTRE()
-
-
+final_error = ComputeTRE()
+f1 = figure;
+plot(error_plot, 'LineWidth',2)
+title('error trend for PBVS')
+xlabel = ('Iterations');
+ylabel = ('Error [mm]');
