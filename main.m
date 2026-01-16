@@ -562,3 +562,59 @@ title('error trend for PBVS')
 xlabel = ('Iterations');
 ylabel = ('Error [mm]');
 
+
+
+
+
+
+% ---------------------------------------------------------
+% 4) RESULTS VISUALIZATION (normal and log scale)
+% ---------------------------------------------------------
+% We generate two plots to analyze the convergence of the Visual Servoing.
+% 1. Linear Scale: Shows the standard minimization of error over time.
+% 2. Log Scale: Shows the nature of the convergence. 
+%    Theoretical Note: With a proportional control law (v = -lambda * e), 
+%    the error decays exponentially (e(t) = e0 * exp(-lambda*t)).
+%    On a semi-log plot, exponential decay appears as a STRAIGHT LINE.
+%    A straight downward slope confirms the control law is stable and ideal.
+
+% Clear label variables to prevent indexing errors
+clear xlabel ylabel 
+
+hFig = figure('Name', 'Q6: PBVS Convergence Analysis', 'Color', 'w', 'Position', [100 100 800 600]);
+t = tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+
+% Plot 1: Linear Scale (Standard Convergence)
+nexttile;
+% Create x-axis vector based on the number of actual iterations recorded
+x_data = 0:(length(error_plot)-1); 
+plot(x_data, error_plot, 'LineWidth', 2, 'Color', [0 0.4470 0.7410]); % Standard Matlab Blue
+grid on;
+yline(threshold_error, '--r', 'Convergence Threshold', 'LabelHorizontalAlignment', 'right', 'LineWidth', 1.5);
+title('Position Error Norm (Linear Scale)', 'FontSize', 12, 'FontWeight', 'bold');
+ylabel('Error ||e|| (mm)', 'FontSize', 11);
+xlim([0 iter]);
+ylim([0 max(error_plot)*1.1]); % Add 10% headroom
+
+% Plot 2: Logarithmic Scale (Proof of Exponential Decay)
+nexttile;
+semilogy(x_data, error_plot, 'LineWidth', 2, 'Color', [0.4660 0.6740 0.1880]); % Matlab Green
+grid on;
+title('Position Error Norm (Log Scale)', 'FontSize', 12, 'FontWeight', 'bold');
+xlabel('Iterations', 'FontSize', 11);
+ylabel('log(||e||)', 'FontSize', 11);
+xlim([0 iter]);
+
+% Add a text annotation explaining the slope
+% We place it near the middle of the plot
+text(iter*0.1, max(error_plot)/2, 'Straight line = Exponential Decay', 'FontSize', 10, 'BackgroundColor', 'w', 'EdgeColor', 'k');
+
+% Add overall title
+title(t, 'Visual Servoing Convergence Analysis', 'FontSize', 14, 'FontWeight', 'bold');
+
+% Export to PDF for Latex Report
+% This saves a vector graphic PDF named "Q6_Convergence.pdf" in your current folder
+exportgraphics(hFig, 'Q6_Convergence.pdf', 'ContentType', 'vector');
+fprintf('Convergence plot saved as Q6_Convergence.pdf\n');
+
+
