@@ -289,6 +289,22 @@ DisplayConfig()
 ComputeTRE()
 
 
+%% ------------------   ASSESSMENT OF ACCURACY (Optional)   ------------------
+% This function performs a Monte Carlo simulation (N=30 iterations) to 
+% statistically compare the Navigation-based method (Q3) vs the Camera-only 
+% method (Q4).
+%
+% It generates:
+%   1. A Boxplot visualizing the spread of the final Target Registration Error (TRE).
+%   2. Detailed tables decomposing the specific sources of error (Target 
+%      Triangulation, Hand-Eye Calibration, and Trocar Estimation) to 
+%      identify exactly where accuracy is lost.
+%
+% Uncomment the line below to run the analysis:
+% AssessAccuracyQ3vsQ4();
+
+
+
 
 %% 5) ASSESSMENT OF ERRORS PROPAGATION
 % ---------------------------------------------------------
@@ -616,5 +632,6 @@ title(t, 'Visual Servoing Convergence Analysis', 'FontSize', 14, 'FontWeight', '
 % This saves a vector graphic PDF named "Q6_Convergence.pdf" in your current folder
 exportgraphics(hFig, 'Q6_Convergence.pdf', 'ContentType', 'vector');
 fprintf('Convergence plot saved as Q6_Convergence.pdf\n');
+
 
 
