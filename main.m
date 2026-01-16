@@ -8,6 +8,7 @@ clear
 clc
 close all
 
+addpath("lib");
 
 %% INITIAL CONDITIONS
 
@@ -560,3 +561,4 @@ plot(error_plot, 'LineWidth',2)
 title('error trend for PBVS')
 xlabel = ('Iterations');
 ylabel = ('Error [mm]');
+
