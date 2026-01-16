@@ -503,14 +503,7 @@ hold off;
 % --> now closed-loop based on position based visual servoing
 % REFERENCE: target position in sensor frame
 % FEEDBACK MEASURE: position of the tip in the sensor frame
-% --> try to minimize the ERROR between reference and feedback
-% Jacobian which links the robot motion to the variation of the error
-% Variation of error: dot(e) = - dot(Ptip) --> in the image device frame!
-% Robot motion: J(q)*dot(q) = Vrobot (velocity of the end effector: it is a
-% operational space control? YES, operational space control --> see * (end of page)
-% Jacobian is the Rotation R_cam_base * (R that inverts the x and y
-% rotations: due to the trocard inversion)  NOTE: leverage effect is
-% ignored
+% --> try to minimize the ERROR between reference and feedback 
 
 % 1) Find the target in a chosen camera position (will be used as reference)
 % -------------------------------------------------------------------------
@@ -632,6 +625,7 @@ title(t, 'Visual Servoing Convergence Analysis', 'FontSize', 14, 'FontWeight', '
 % This saves a vector graphic PDF named "Q6_Convergence.pdf" in your current folder
 exportgraphics(hFig, 'Q6_Convergence.pdf', 'ContentType', 'vector');
 fprintf('Convergence plot saved as Q6_Convergence.pdf\n');
+
 
 
 
